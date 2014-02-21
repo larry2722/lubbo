@@ -28,8 +28,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
-import com.alibaba.dubbo.common.bytecode.Wrapper;
-import com.alibaba.dubbo.common.io.Bytes;
+import com.lucky.lubbo.common.bytecode.Wrapper;
 
 public class GenericJSONConverter implements JSONConverter
 {
