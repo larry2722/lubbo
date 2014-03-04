@@ -25,6 +25,7 @@ import com.lucky.lubbo.common.logger.Logger;
 import com.lucky.lubbo.common.logger.LoggerFactory;
 import com.lucky.lubbo.common.utils.ConcurrentHashSet;
 import com.lucky.lubbo.common.utils.Holder;
+import com.lucky.lubbo.common.utils.StringUtils;
 
 /**
  * Lubbo使用的扩展点获取。<p>
@@ -63,6 +64,16 @@ public class ExtensionLoader<T> {
 	private static final Pattern NAME_SEPARATOR = Pattern.compile("\\s*[,]+\\s*");
 	
 	private final Holder<Map<String, Class<?>>> cachedClasses = new Holder<Map<String,Class<?>>>();
+	
+	private final ConcurrentMap<Class<?>, String> cachedNames = new ConcurrentHashMap<Class<?>, String>();
+	
+	private final Map<String, Activate> cachedActivates = new ConcurrentHashMap<String, Activate>();
+	
+	private final ConcurrentMap<String, Holder<Object>> cachedInstances = new ConcurrentHashMap<String, Holder<Object>>();
+	
+	private static final ConcurrentMap<Class<?>, Object> EXTENSION_INSTANCES = new ConcurrentHashMap<Class<?>, Object>();
+	
+	private Map<String, IllegalStateException> exceptions = new ConcurrentHashMap<String, IllegalStateException>();
 	
 	private Set<Class<?>> cachedWrapperClasses;
 	
@@ -493,15 +504,15 @@ public class ExtensionLoader<T> {
     }
     
     private String findAnnotationName(Class<?> clazz) {
-        com.alibaba.dubbo.common.Extension extension = clazz.getAnnotation(com.alibaba.dubbo.common.Extension.class);
-        if (extension == null) {
+    	SPI spi = clazz.getAnnotation(SPI.class);
+        if (spi == null) {
             String name = clazz.getSimpleName();
             if (name.endsWith(type.getSimpleName())) {
                 name = name.substring(0, name.length() - type.getSimpleName().length());
             }
             return name.toLowerCase();
         }
-        return extension.value();
+        return spi.value();
     }
 	
 	private T injectExtension(T instance) {
@@ -533,5 +544,128 @@ public class ExtensionLoader<T> {
 	
 	private static ClassLoader findClassLoader() {
         return  ExtensionLoader.class.getClassLoader();
+    }
+	
+	public boolean hasExtension(String name) {
+	    if (name == null || name.length() == 0)
+	        throw new IllegalArgumentException("Extension name == null");
+	    try {
+	        return getExtensionClass(name) != null;
+	    } catch (Throwable t) {
+	        return false;
+	    }
+	}
+	
+	private Class<?> getExtensionClass(String name) {
+	    if (type == null)
+	        throw new IllegalArgumentException("Extension type == null");
+	    if (name == null)
+	        throw new IllegalArgumentException("Extension name == null");
+	    Class<?> clazz = getExtensionClasses().get(name);
+	    if (clazz == null)
+	        throw new IllegalStateException("No such extension \"" + name + "\" for " + type.getName() + "!");
+	    return clazz;
+	}
+	
+	/**
+	 * 返回缺省的扩展点名，如果没有设置缺省则返回<code>null</code>。 
+	 */
+	public String getDefaultExtensionName() {
+	    getExtensionClasses();
+	    return cachedDefaultName;
+	}
+	
+	/**
+     * 返回指定名字的扩展。如果指定名字的扩展不存在，则抛异常 {@link IllegalStateException}.
+     *
+     * @param name
+     * @return
+     */
+	@SuppressWarnings("unchecked")
+	public T getExtension(String name) {
+		if (name == null || name.length() == 0)
+		    throw new IllegalArgumentException("Extension name == null");
+		if ("true".equals(name)) {
+		    return getDefaultExtension();
+		}
+		Holder<Object> holder = cachedInstances.get(name);
+		if (holder == null) {
+		    cachedInstances.putIfAbsent(name, new Holder<Object>());
+		    holder = cachedInstances.get(name);
+		}
+		Object instance = holder.get();
+		if (instance == null) {
+		    synchronized (holder) {
+	            instance = holder.get();
+	            if (instance == null) {
+	                instance = createExtension(name);
+	                holder.set(instance);
+	            }
+	        }
+		}
+		return (T) instance;
+	}
+	
+	/**
+	 * 返回缺省的扩展，如果没有设置则返回<code>null</code>。 
+	 */
+	public T getDefaultExtension() {
+	    getExtensionClasses();
+        if(null == cachedDefaultName || cachedDefaultName.length() == 0
+                || "true".equals(cachedDefaultName)) {
+            return null;
+        }
+        return getExtension(cachedDefaultName);
+	}
+	
+	@SuppressWarnings("unchecked")
+    private T createExtension(String name) {
+        Class<?> clazz = getExtensionClasses().get(name);
+        if (clazz == null) {
+            throw findException(name);
+        }
+        try {
+            T instance = (T) EXTENSION_INSTANCES.get(clazz);
+            if (instance == null) {
+                EXTENSION_INSTANCES.putIfAbsent(clazz, (T) clazz.newInstance());
+                instance = (T) EXTENSION_INSTANCES.get(clazz);
+            }
+            injectExtension(instance);
+            Set<Class<?>> wrapperClasses = cachedWrapperClasses;
+            if (wrapperClasses != null && wrapperClasses.size() > 0) {
+                for (Class<?> wrapperClass : wrapperClasses) {
+                    instance = injectExtension((T) wrapperClass.getConstructor(type).newInstance(instance));
+                }
+            }
+            return instance;
+        } catch (Throwable t) {
+            throw new IllegalStateException("Extension instance(name: " + name + ", class: " +
+                    type + ")  could not be instantiated: " + t.getMessage(), t);
+        }
+    }
+	
+	private IllegalStateException findException(String name) {
+        for (Map.Entry<String, IllegalStateException> entry : exceptions.entrySet()) {
+            if (entry.getKey().toLowerCase().contains(name.toLowerCase())) {
+                return entry.getValue();
+            }
+        }
+        StringBuilder buf = new StringBuilder("No such extension " + type.getName() + " by name " + name);
+
+
+        int i = 1;
+        for (Map.Entry<String, IllegalStateException> entry : exceptions.entrySet()) {
+            if(i == 1) {
+                buf.append(", possible causes: ");
+            }
+
+            buf.append("\r\n(");
+            buf.append(i ++);
+            buf.append(") ");
+            buf.append(entry.getKey());
+            buf.append(":\r\n");
+            buf.append(StringUtils.toString(entry.getValue()));
+        }
+        return new IllegalStateException(buf.toString());
     }
 }

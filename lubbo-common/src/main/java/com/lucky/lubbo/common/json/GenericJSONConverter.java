@@ -29,6 +29,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 import com.lucky.lubbo.common.bytecode.Wrapper;
+import com.lucky.lubbo.common.io.Bytes;
 
 public class GenericJSONConverter implements JSONConverter
 {
